@@ -19,15 +19,10 @@ contract DemoPreSale is Haltable, PriceReceiver {
 
   InvestorWhiteList public investorWhiteList;
 
-  uint public constant SPACEUsdRate = 1; //0.01 cents fot one token
+  uint public constant TokenUsdRate = 25; //0.25 cents fot one token
+  uint public constant MonthsInSeconds = 10; // seconds in one months
 
   uint public ethUsdRate;
-
-  uint public btcUsdRate;
-
-  uint public hardCap;
-
-  uint public softCap;
 
   uint public collected = 0;
 
@@ -39,22 +34,13 @@ contract DemoPreSale is Haltable, PriceReceiver {
 
   uint public endTime;
 
-  bool public softCapReached = false;
-
   bool public crowdsaleFinished = false;
 
   mapping (address => uint) public deposited;
 
-  uint public constant PRICE_BEFORE_SOFTCAP = 65; // in cents * 100
-  uint public constant PRICE_AFTER_SOFTCAP = 80; // in cents * 100
-
-  event SoftCapReached(uint softCap);
-
   event NewContribution(address indexed holder, uint tokenAmount, uint etherAmount);
 
   event NewReferralTransfer(address indexed investor, address indexed referral, uint tokenAmount);
-
-  event Refunded(address indexed holder, uint amount);
 
   modifier icoActive() {
     require(now >= startTime && now < endTime);
@@ -66,74 +52,47 @@ contract DemoPreSale is Haltable, PriceReceiver {
     _;
   }
 
-  modifier minInvestment() {
-    require(msg.value.mul(ethUsdRate).div(SPACEUsdRate) >= 50000 * 1 ether);
-    _;
-  }
-
   modifier inWhiteList() {
-    require(investorWhiteList.isAllowed(msg.sender));
+    require(true);
     _;
   }
 
   function DemoPreSale(
-    uint _hardCapSPACE,
-    uint _softCapSPACE,
     address _token,
     address _beneficiary,
     address _investorWhiteList,
     uint _baseEthUsdPrice,
 
-    uint _startTime,
-    uint _endTime
+    uint _startTime
   ) {
-    hardCap = _hardCapSPACE.mul(1 ether);
-    softCap = _softCapSPACE.mul(1 ether);
-
     token = DemoToken(_token);
     beneficiary = _beneficiary;
     investorWhiteList = InvestorWhiteList(_investorWhiteList);
 
     startTime = _startTime;
-    endTime = _endTime;
+    endTime = startTime.add(MonthsInSeconds.mul(12));
 
     ethUsdRate = _baseEthUsdPrice;
   }
 
-  function() payable minInvestment inWhiteList {
+  function() payable inWhiteList {
     doPurchase();
   }
 
-  function refund() external icoEnded {
-    require(softCapReached == false);
-    require(deposited[msg.sender] > 0);
-
-    uint refund = deposited[msg.sender];
-
-    deposited[msg.sender] = 0;
-    msg.sender.transfer(refund);
-
-    weiRefunded = weiRefunded.add(refund);
-    Refunded(msg.sender, refund);
-  }
-
   function withdraw() external icoEnded onlyOwner {
-    require(softCapReached);
     beneficiary.transfer(collected);
     token.transfer(beneficiary, token.balanceOf(this));
     crowdsaleFinished = true;
   }
 
   function calculateTokens(uint ethReceived) internal view returns (uint) {
-    if (!softCapReached) {
-      uint tokens = ethReceived.mul(ethUsdRate.mul(100)).div(PRICE_BEFORE_SOFTCAP);
-      if (softCap >= tokensSold.add(tokens)) return tokens;
-      uint firstPart = softCap.sub(tokensSold);
-      uint  firstPartInWei = firstPart.mul(PRICE_BEFORE_SOFTCAP).div(ethUsdRate.mul(100));
-      uint secondPartInWei = ethReceived.sub(firstPart.mul(PRICE_BEFORE_SOFTCAP).div(ethUsdRate.mul(100)));
-      return firstPart.add(secondPartInWei.mul(ethUsdRate.mul(100)).div(PRICE_AFTER_SOFTCAP));
-    }
-    return ethReceived.mul(ethUsdRate.mul(100)).div(PRICE_AFTER_SOFTCAP);
+    uint actualTokenUsdRate = TokenUsdRate.add(TokenUsdRate.mul((now - startTime).div(MonthsInSeconds).mul(10).div(100)));
+    
+    return ethReceived.mul(ethUsdRate.mul(100)).div(actualTokenUsdRate);
+  }
+
+  function calculateReferralBonus(uint amountTokens) internal view returns (uint) {
+    return amountTokens.mul(8).div(100);
   }
 
   function receiveEthPrice(uint ethUsdPrice) external onlyEthPriceProvider {
@@ -158,11 +117,13 @@ contract DemoPreSale is Haltable, PriceReceiver {
 
     uint newTokensSold = tokensSold.add(tokens);
 
-    require(newTokensSold <= hardCap);
+    uint referralBonus = 0;
+    referralBonus = calculateReferralBonus(tokens);
 
-    if (!softCapReached && newTokensSold >= softCap) {
-      softCapReached = true;
-      SoftCapReached(softCap);
+    address referral = investorWhiteList.getReferralOf(msg.sender);
+
+    if (referralBonus > 0 && referral != 0x0) {
+      newTokensSold = newTokensSold.add(referralBonus);
     }
 
     collected = collected.add(msg.value);
@@ -173,6 +134,11 @@ contract DemoPreSale is Haltable, PriceReceiver {
 
     token.transfer(msg.sender, tokens);
     NewContribution(msg.sender, tokens, msg.value);
+
+    if (referralBonus > 0 && referral != 0x0) {
+      token.transfer(referral, referralBonus);
+      NewReferralTransfer(msg.sender, referral, referralBonus);
+    }
   }
 
   function transferOwnership(address newOwner) onlyOwner icoEnded {
